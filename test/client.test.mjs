@@ -77,9 +77,17 @@ function loadPlugin(initialOpen = false) {
   const captured = []
   const React = fakeReact(initialOpen)
   const document = fakeDocument()
-  const window = { __ModuleLoader__: { load: definition => captured.push(definition) } }
+  const window = {
+    __ModuleLoader__: { load: definition => captured.push(definition) },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }
+  // 定时器用桩：真实 setInterval 会让测试进程挂住（采样器）。
+  const fakeSetInterval = () => 0
+  const fakeClearInterval = () => {}
   // 在宿主 realm 里执行：跨 realm 的数组/对象会让 deepStrictEqual 因原型不同而失败。
-  new Function('window', 'document', SOURCE)(window, document)
+  new Function('window', 'document', 'setInterval', 'clearInterval', SOURCE)
+    (window, document, fakeSetInterval, fakeClearInterval)
   assert.equal(captured.length, 1, 'client.js 必须恰好注册一个运行时 bundle')
   const definition = captured[0]
   assert.equal(definition.id, 'lingwu-dsh-conversation-cost')
@@ -113,8 +121,9 @@ function classesOf(node, out = []) {
 /** 造一个 turnTail 槽位会传进来的 TurnLocation。 */
 function fakeTurn(tokenUsage, atMs) {
   return {
+    turn: 1,
     start: { time: atMs - 60_000 },
-    end: { time: atMs },
+    end: { time: atMs, seq: 10 },
     data: {
       get(key) {
         if (key !== 'turn-tail') return undefined
@@ -455,6 +464,79 @@ await checkAsync('余额读取器：注入守卫抛错 / account 取值抛错时
 check('余额胶囊：没有数据时不渲染（返回 null）', () => {
   const { plugin: fresh } = loadPlugin()
   assert.equal(fresh.apply.debug.Balance({}), null)
+})
+
+check('余额归一化带数值与币种，供对账使用', () => {
+  const ready = debug.normalizeBalance({
+    status: 'ready',
+    value: [{ currency: 'CNY', balance: '12.34' }, { currency: 'CNY', balance: '0.66' }],
+    bonusWallets: [],
+  })
+  assert.equal(ready.amount, 13)
+  assert.equal(ready.currency, 'CNY')
+})
+
+check('对账窗口：轮前/轮后快照取对，差值=实扣', () => {
+  const samples = [
+    { t: 1000, amount: 14.0, currency: 'CNY' },
+    { t: 9000, amount: 13.98, currency: 'CNY' },
+  ]
+  const result = debug.reconcileWindow(samples, 2000, 4000, 10000)
+  assert.equal(result.status, 'ok')
+  assert.equal(Math.round(result.delta * 100), 2)
+})
+
+check('对账窗口：余额没动先继续等，超时才判 0', () => {
+  const samples = [{ t: 1000, amount: 14, currency: 'CNY' }, { t: 9000, amount: 14, currency: 'CNY' }]
+  assert.equal(debug.reconcileWindow(samples, 2000, 4000, 10000).status, 'pending-zero')
+  assert.equal(debug.reconcileWindow(samples, 2000, 4000, 4000 + 300000 + 1).status, 'zero')
+})
+
+check('对账窗口：充值退款为负、缺快照/过期/币种不一致都有明确状态', () => {
+  const refund = [{ t: 1000, amount: 13, currency: 'CNY' }, { t: 9000, amount: 14, currency: 'CNY' }]
+  assert.equal(debug.reconcileWindow(refund, 2000, 4000, 10000).status, 'refund')
+  assert.equal(debug.reconcileWindow([{ t: 9000, amount: 13, currency: 'CNY' }], 2000, 4000, 10000).status, 'missing-before')
+  assert.equal(debug.reconcileWindow([{ t: 1000, amount: 14, currency: 'CNY' }], 2000, 4000, 10000).status, 'pending')
+  const stale = [{ t: 0, amount: 14, currency: 'CNY' }, { t: 900000, amount: 13, currency: 'CNY' }]
+  assert.equal(debug.reconcileWindow(stale, 1000, 2000, 1_000_000).status, 'stale-before')
+  const mixed = [{ t: 1000, amount: 14, currency: 'CNY' }, { t: 9000, amount: 1, currency: 'USD' }]
+  assert.equal(debug.reconcileWindow(mixed, 2000, 4000, 10000).status, 'currency-mismatch')
+})
+
+check('带符号金额与对账文案', () => {
+  assert.equal(debug.formatSignedMoney(0.02), '+¥0.02')
+  assert.equal(debug.formatSignedMoney(-0.05), '-¥0.05')
+  assert.equal(debug.formatSignedMoney(0), '¥0.00')
+  assert.equal(debug.reconcileText({ reconcileStatus: 'ok', delta: 0.02 }), '¥0.02')
+  assert.equal(debug.reconcileText({ reconcileStatus: 'missing-before' }), '缺轮前余额')
+})
+
+await checkAsync('对账台账：登记轮次 → 采样 → 自动对上实扣', async () => {
+  const store = debug.createReconcileStore(() => 10000)
+  store.registerTurn({ key: '1-10', turn: 1, estimated: 0.5, total: 54400, model: 'demo', startMs: 2000, endMs: 4000 })
+  store.recordBalance({ amount: 14.0, currency: 'CNY', text: '¥14.00' }, 1000)
+  assert.equal(store.getTurn('1-10').reconcileStatus, 'pending')
+  store.recordBalance({ amount: 13.98, currency: 'CNY', text: '¥13.98' }, 9000)
+  const record = store.getTurn('1-10')
+  assert.equal(record.reconcileStatus, 'ok')
+  assert.equal(Math.round(record.delta * 100), 2)
+  const totals = store.getTotals()
+  assert.equal(totals.reconciled, 1)
+  assert.equal(Math.round(totals.actual * 100), 2)
+  assert.equal(Math.round(totals.estimated * 100), 50)
+})
+
+check('对账成功时明细里并排出现预估与实扣', () => {
+  const store = debug.createReconcileStore(() => 10000)
+  store.registerTurn({ key: '1-10', turn: 1, estimated: 0.0312, total: 54400, model: 'deepseek-flash', startMs: -56000, endMs: 4000 })
+  store.recordBalance({ amount: 14.0, currency: 'CNY', text: '¥14.00' }, -60000)
+  store.recordBalance({ amount: 13.9688, currency: 'CNY', text: '¥13.97' }, 9000)
+  const Component = debug.makeComponent(fakeReact(true), store, () => {})
+  const text = textOf(Component({ turn: fakeTurn(USAGE, 4000) }))
+  assert.match(text, /余额对账/)
+  assert.match(text, /本轮实扣/)
+  assert.match(text, /预估差额/)
+  assert.match(text, /实扣 ¥0\.03/)
 })
 
 console.log('\n全部通过：' + passed + ' 项')

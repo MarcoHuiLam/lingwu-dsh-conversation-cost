@@ -38,6 +38,21 @@
   /** 余额自动刷新间隔（毫秒）。 */
   var BALANCE_REFRESH_MS = 60000
 
+  // ── 余额对账 ────────────────────────────────────────────────────────
+  /** 对账采样间隔：每 30 秒读一次余额，作为「轮前/轮后」快照。 */
+  var BALANCE_SAMPLE_MS = 30000
+  /** 轮前快照最多往回找 15 分钟，太旧就不算数（避免拿上个小时的余额来对账）。 */
+  var BALANCE_BEFORE_WINDOW_MS = 15 * 60 * 1000
+  /** 轮后快照至少等 3 秒，给账单落账一点时间。 */
+  var BALANCE_AFTER_GRACE_MS = 3000
+  /** 余额明明没动、但也没到 5 分钟：继续等，不急着判「0」。 */
+  var BALANCE_ZERO_WAIT_MS = 5 * 60 * 1000
+  /** 本机对账台账（localStorage，仅当前浏览器、仅自己可见）。 */
+  var SAMPLE_STORAGE_KEY = 'lingwu-conversation-balance-samples-v1'
+  var LEDGER_STORAGE_KEY = 'lingwu-conversation-ledger-v1'
+  var SAMPLE_LIMIT = 400
+  var LEDGER_LIMIT = 200
+
   // ══════════════════════════════════════════════════════════════════
   //  价格表：人民币 / 百万 tokens —— 改这里就能改价，改完刷新页面
   //
@@ -306,11 +321,16 @@
     var bonus = Array.isArray(value.bonusWallets) ? value.bonusWallets : []
     var text = balanceText(wallets)
     if (text === null) return null
+    var cny = walletSum(wallets, 'CNY')
+    var usd = walletSum(wallets, 'USD')
+    var amount = cny !== null ? cny : usd
     return {
       text: text,
       bonusText: balanceText(bonus),
       wallets: wallets,
       bonusWallets: bonus,
+      amount: amount,
+      currency: cny !== null ? 'CNY' : 'USD',
       updatedAt: Date.now(),
     }
   }
@@ -395,6 +415,17 @@
     'font-variant-numeric:tabular-nums;white-space:nowrap}',
     '.tc-bal-wrap>.tc-detail{position:absolute;top:100%;left:0;z-index:30;margin-top:6px;min-width:210px;',
     'box-shadow:0 8px 24px rgba(15,20,30,.14);white-space:nowrap}',
+    '.tc-actual{color:var(--dsw-alias-state-success-primary,#2f9e5f);font-weight:600;',
+    'font-variant-numeric:tabular-nums}',
+    '.tc-actual-warn{color:var(--dsw-alias-state-warn-primary,#b7791f)}',
+    '.tc-recon-title{margin-top:6px;padding-top:6px;border-top:1px dashed var(--dsw-alias-border-l1,#e5e6eb);',
+    'font-weight:600;color:var(--dsw-alias-label-primary,#1f2329);font-size:12px}',
+    '.tc-recon-actions{display:flex;gap:10px;align-items:center;margin-top:4px}',
+    '.tc-refresh{font:inherit;font-size:11.5px;line-height:18px;padding:1px 8px;border-radius:6px;',
+    'border:1px solid var(--dsw-alias-border-l1,#e5e6eb);background:transparent;cursor:pointer;',
+    'color:var(--dsw-alias-label-secondary,#5a606b)}',
+    '.tc-refresh:hover{color:var(--dsw-alias-label-primary,#1f2329);',
+    'border-color:var(--dsw-alias-border-l2,#d0d3d9)}',
     '@media (prefers-reduced-motion:reduce){.tc-line{transition:none}}',
   ].join('')
 
@@ -411,21 +442,287 @@
     return React.createElement('div', { className: 'tc-note', key: key }, text)
   }
 
+  // ────────────────────────────── 余额对账 ──────────────────────────────
+
+  /** 读 localStorage，失败/不存在时用兜底值（保持纯函数可测）。 */
+  function readStored(key, fallback) {
+    try {
+      if (typeof localStorage === 'undefined' || localStorage === null) return fallback
+      var raw = localStorage.getItem(key)
+      if (!raw) return fallback
+      var parsed = JSON.parse(raw)
+      return parsed === null || parsed === undefined ? fallback : parsed
+    } catch (error) {
+      return fallback
+    }
+  }
+
+  /** 写 localStorage（失败就算了，不阻断 UI）。 */
+  function writeStored(key, value) {
+    try {
+      if (typeof localStorage === 'undefined' || localStorage === null) return
+      localStorage.setItem(key, JSON.stringify(value))
+    } catch (error) {
+      // 配额满/隐私模式：对账台账只在内存里生效。
+    }
+  }
+
+  /** 一轮的稳定键：轮号 + 结束 seq。 */
+  function turnKey(turn) {
+    if (!turn || typeof turn !== 'object') return 'unknown'
+    var seq = turn.end && typeof turn.end.seq === 'number' ? turn.end.seq : 'x'
+    return String(turn.turn) + '-' + String(seq)
+  }
+
+  /** 一轮的时间窗口（轮开始 / 轮结束）。 */
+  function turnWindow(turn) {
+    var startMs = turn && turn.start && typeof turn.start.time === 'number' ? turn.start.time : undefined
+    var endMs = turn && turn.end && typeof turn.end.time === 'number' ? turn.end.time : undefined
+    return { startMs: startMs, endMs: endMs }
+  }
+
+  /**
+   * 用余额采样算一轮的实扣。
+   * 规则：轮前取「开始前最近一次采样」，轮后取「结束后至少 3 秒的第一次采样」，
+   * 差值 = 轮前余额 - 轮后余额（正数 = 扣费，负数 = 充值/退款）。
+   * 无法判断时给出状态，不瞎给数字：
+   *   missing-before（缺轮前快照） / pending（还没等到轮后快照） /
+   *   stale-before（轮前快照太旧） / currency-mismatch /
+   *   pending-zero（余额暂时没变，继续等） / ok / refund / zero
+   * @param {Array<{t:number, amount:number, currency:string}>} samples - 余额采样。
+   * @param {number} startMs - 轮开始时间。
+   * @param {number} endMs - 轮结束时间。
+   * @param {number} now - 当前时间。
+   * @returns {{status:string, before?:object, after?:object, delta?:number}}
+   */
+  function reconcileWindow(samples, startMs, endMs, now) {
+    if (typeof startMs !== 'number' || typeof endMs !== 'number') return { status: 'missing-window' }
+    var before
+    var after
+    for (var index = 0; index < samples.length; index += 1) {
+      var sample = samples[index]
+      if (sample.t <= startMs && (before === undefined || sample.t > before.t)) before = sample
+    }
+    for (var cursor = 0; cursor < samples.length; cursor += 1) {
+      var candidate = samples[cursor]
+      if (candidate.t >= endMs + BALANCE_AFTER_GRACE_MS && (after === undefined || candidate.t < after.t)) after = candidate
+    }
+    if (before === undefined) return { status: 'missing-before' }
+    if (now - startMs > BALANCE_BEFORE_WINDOW_MS) {
+      // 轮前快照比整轮窗口还早太多：说明中间没有采样，不能代表轮前余额。
+      return { status: 'stale-before', before: before }
+    }
+    if (after === undefined) return { status: 'pending', before: before }
+    if (before.currency !== after.currency) return { status: 'currency-mismatch', before: before, after: after }
+    var delta = before.amount - after.amount
+    if (delta > 0.000001) return { status: 'ok', before: before, after: after, delta: delta }
+    if (delta < -0.000001) return { status: 'refund', before: before, after: after, delta: delta }
+    // 余额没动：可能账单还没落，5 分钟内继续等。
+    if (now - endMs < BALANCE_ZERO_WAIT_MS) return { status: 'pending-zero', before: before, after: after, delta: 0 }
+    return { status: 'zero', before: before, after: after, delta: 0 }
+  }
+
+  /** 带符号金额：+¥0.02 / -¥0.02。 */
+  function formatSignedMoney(value) {
+    if (typeof value !== 'number' || !isFinite(value)) return '—'
+    if (Math.abs(value) < 0.005) return '¥0.00'
+    return (value > 0 ? '+' : '-') + '¥' + formatMoney(Math.abs(value))
+  }
+
+  /** 时间点格式化（HH:mm:ss，本地时区）。 */
+  function formatClock(ms) {
+    try {
+      if (typeof ms !== 'number') return '—'
+      return new Date(ms).toLocaleTimeString()
+    } catch (error) {
+      return '—'
+    }
+  }
+
+  /** 对账状态的展示文案。 */
+  function reconcileText(record) {
+    if (!record) return '等待余额采样'
+    switch (record.reconcileStatus) {
+      case 'ok': return '¥' + formatMoney(record.delta)
+      case 'refund': return '+' + '¥' + formatMoney(Math.abs(record.delta)) + '（余额增加）'
+      case 'zero': return '¥0.00（余额未变动）'
+      case 'pending-zero': return '等待落账…'
+      case 'pending': return '等待轮后余额…'
+      case 'missing-before': return '缺轮前余额'
+      case 'stale-before': return '轮前快照太旧'
+      case 'currency-mismatch': return '币种不一致'
+      case 'missing-window': return '缺时间窗口'
+      default: return '—'
+    }
+  }
+
+  /** 差额判断文案：预估 vs 实扣。 */
+  function reconcileVerdict(estimated, record) {
+    if (typeof estimated !== 'number' || !record) return null
+    if (record.reconcileStatus !== 'ok' && record.reconcileStatus !== 'refund' && record.reconcileStatus !== 'zero') return null
+    var actual = record.reconcileStatus === 'refund' ? -Math.abs(record.delta) : record.delta
+    var diff = estimated - actual
+    if (Math.abs(diff) < 0.01) return { text: '一致（差 ' + formatSignedMoney(diff) + '）', level: 'ok' }
+    return {
+      text: (diff > 0 ? '预估偏高 ' : '预估偏低 ') + formatSignedMoney(Math.abs(diff)),
+      level: 'warn',
+    }
+  }
+
+  /**
+   * 造一个对账台账：余额采样 + 每轮预估/实扣记录（localStorage 持久化）。
+   * 页面里只需要一个实例（apply 时创建），组件通过 subscribe 订阅变化。
+   * @param {() => number} [clock] - 当前时间（测试注入用）；默认 Date.now。
+   * @returns 台账对象。
+   */
+  function createReconcileStore(clock) {
+    var nowFn = typeof clock === 'function' ? clock : function () { return Date.now() }
+    var samples = readStored(SAMPLE_STORAGE_KEY, [])
+    if (!Array.isArray(samples)) samples = []
+    var turns = readStored(LEDGER_STORAGE_KEY, {})
+    if (turns === null || typeof turns !== 'object') turns = {}
+    var listeners = []
+
+    function persist() {
+      if (samples.length > SAMPLE_LIMIT) samples = samples.slice(samples.length - SAMPLE_LIMIT)
+      var keys = Object.keys(turns)
+      if (keys.length > LEDGER_LIMIT) {
+        keys.sort(function (left, right) { return (turns[left].updatedAt ?? 0) - (turns[right].updatedAt ?? 0) })
+        for (var index = 0; index < keys.length - LEDGER_LIMIT; index += 1) delete turns[keys[index]]
+      }
+      writeStored(SAMPLE_STORAGE_KEY, samples)
+      writeStored(LEDGER_STORAGE_KEY, turns)
+    }
+
+    function notify() {
+      for (var index = 0; index < listeners.length; index += 1) {
+        try { listeners[index]() } catch (error) { /* 单个订阅者出错不影响其他 */ }
+      }
+    }
+
+    function reconcileRecord(record) {
+      var now = nowFn()
+      var result = reconcileWindow(samples, record.startMs, record.endMs, now)
+      record.reconcileStatus = result.status
+      record.delta = typeof result.delta === 'number' ? result.delta : null
+      record.balanceBefore = result.before ? result.before.amount : null
+      record.balanceAfter = result.after ? result.after.amount : null
+      record.beforeAt = result.before ? result.before.t : null
+      record.afterAt = result.after ? result.after.t : null
+      record.updatedAt = now
+      return record
+    }
+
+    return {
+      /** 记录一次余额采样，并推进所有待对账的轮次。`atMs` 仅供测试回填历史时间。 */
+      recordBalance: function (balance, atMs) {
+        if (!balance || typeof balance.amount !== 'number') return
+        var at = typeof atMs === 'number' ? atMs : Date.now()
+        var last = samples[samples.length - 1]
+        if (last === undefined || last.amount !== balance.amount || at - last.t > 10000) {
+          samples.push({ t: at, amount: balance.amount, currency: balance.currency })
+        }
+        Object.keys(turns).forEach(function (key) { reconcileRecord(turns[key]) })
+        persist()
+        notify()
+      },
+      /** 登记一轮的预估花费；已对上的记录不会被重复覆盖成待对账。 */
+      registerTurn: function (record) {
+        if (!record || typeof record.key !== 'string') return
+        var existing = turns[record.key]
+        if (existing !== undefined && existing.reconcileStatus === 'ok') {
+          existing.estimated = record.estimated
+          existing.updatedAt = Date.now()
+        } else {
+          turns[record.key] = reconcileRecord({
+            key: record.key,
+            turn: record.turn,
+            estimated: typeof record.estimated === 'number' ? record.estimated : null,
+            total: record.total,
+            model: record.model,
+            startMs: record.startMs,
+            endMs: record.endMs,
+            delta: null,
+            reconcileStatus: 'pending',
+            createdAt: Date.now(),
+          })
+        }
+        persist()
+        notify()
+      },
+      getTurn: function (key) {
+        return turns[key]
+      },
+      /** 本会话累计：只统计已经有实扣的轮次，避免把没对上的当 0。 */
+      getTotals: function () {
+        var totals = { estimated: 0, actual: 0, reconciled: 0, pending: 0 }
+        Object.keys(turns).forEach(function (key) {
+          var record = turns[key]
+          var done = record.reconcileStatus === 'ok' || record.reconcileStatus === 'refund' || record.reconcileStatus === 'zero'
+          if (done) {
+            totals.reconciled += 1
+            totals.actual += record.reconcileStatus === 'refund' ? -Math.abs(record.delta) : (record.delta ?? 0)
+            if (typeof record.estimated === 'number') totals.estimated += record.estimated
+          } else {
+            totals.pending += 1
+          }
+        })
+        return totals
+      },
+      subscribe: function (listener) {
+        listeners.push(listener)
+        return function () {
+          var index = listeners.indexOf(listener)
+          if (index >= 0) listeners.splice(index, 1)
+        }
+      },
+      getSamples: function () { return samples.slice() },
+    }
+  }
+
   /**
    * 造出组件（把 React 关在闭包里，bundle 里不依赖全局 React）。
    * @param React - 由工厂参数 require('react') 拿到的 React。
+   * @param store - 对账台账（余额采样 + 每轮预估/实扣）。
+   * @param refreshBalance - 主动读一次余额（用于「刷新余额」按钮）。
    * @returns 渲染「本轮花费」一行的 React 组件。
    */
-  function makeComponent(React) {
+  function makeComponent(React, store, refreshBalance) {
     return function TurnCostLine(props) {
       var openState = React.useState(false)
       var open = openState[0]
       var setOpen = openState[1]
+      var revisionState = React.useState(0)
+      var setRevision = revisionState[1]
       var turn = props === null || props === undefined ? undefined : props.turn
       var usage = readTurnUsage(turn)
-      // hook 已在上面无条件调用；没有账本就什么都不渲染。
+      var key = turnKey(turn)
+      var window = turnWindow(turn)
+
+      // 所有 hook 必须无条件调用（不同轮次是否有账本不能改变 hook 数量）。
+      React.useEffect(function () {
+        if (usage === undefined || store === undefined) return undefined
+        var summaryForLedger = computeSummary(usage, turnTime(turn))
+        var routeForLedger = summaryForLedger.routes.length === 0
+          ? '未知'
+          : summaryForLedger.routes.map(function (route) { return route.provider + '/' + route.model }).join('、')
+        store.registerTurn({
+          key: key,
+          turn: turn && typeof turn.turn === 'number' ? turn.turn : null,
+          estimated: summaryForLedger.priced ? summaryForLedger.cost : null,
+          total: summaryForLedger.total,
+          model: routeForLedger,
+          startMs: window.startMs,
+          endMs: window.endMs,
+        })
+        return store.subscribe(function () { setRevision(function (value) { return value + 1 }) })
+      }, [key])
+
+      // 没有账本就什么都不渲染。
       if (usage === undefined) return null
       var summary = computeSummary(usage, turnTime(turn))
+      var record = store === undefined ? undefined : store.getTurn(key)
+      var verdict = reconcileVerdict(summary.cost, record)
 
       var head = [
         React.createElement('span', { className: 'tc-amount', key: 'amount' },
@@ -436,6 +733,18 @@
       if (summary.hitText !== null) {
         head.push(React.createElement('span', { className: 'tc-sep', key: 'sep2', 'aria-hidden': 'true' }, '·'))
         head.push(React.createElement('span', { className: 'tc-hit', key: 'hit' }, '命中 ' + summary.hitText))
+      }
+      // 有实扣就并排显示，方便一眼看出「预估 vs 实扣」。
+      if (record !== undefined && (record.reconcileStatus === 'ok' || record.reconcileStatus === 'refund' || record.reconcileStatus === 'zero')) {
+        head.push(React.createElement('span', { className: 'tc-sep', key: 'sep3', 'aria-hidden': 'true' }, '·'))
+        head.push(React.createElement('span', {
+          className: record.reconcileStatus === 'ok' && verdict !== null && verdict.level === 'warn'
+            ? 'tc-actual tc-actual-warn'
+            : 'tc-actual',
+          key: 'actual',
+        }, record.reconcileStatus === 'refund'
+          ? '余额 +¥' + formatMoney(Math.abs(record.delta))
+          : '实扣 ¥' + formatMoney(record.delta)))
       }
       head.push(React.createElement('span', { className: 'tc-caret', key: 'caret', 'aria-hidden': 'true' },
         open ? '▴' : '▾'))
@@ -479,6 +788,39 @@
         body.push(note(React, '本轮跨多个模型，按第一个模型的单价折算。', 'n3'))
       }
 
+      // ── 余额对账（预估之外的真实扣费） ──
+      body.push(React.createElement('div', { className: 'tc-recon-title', key: 'recon-title' }, '余额对账'))
+      body.push(detailRow(React, '本轮实扣', reconcileText(record), 'k4'))
+      if (verdict !== null) body.push(detailRow(React, '预估差额', verdict.text, 'k5'))
+      if (record !== undefined && record.beforeAt !== null && record.afterAt !== null) {
+        body.push(detailRow(React, '余额窗口', formatClock(record.beforeAt) + ' → ' + formatClock(record.afterAt), 'k6'))
+        body.push(detailRow(React, '余额变化',
+          '¥' + formatMoney(record.balanceBefore) + ' → ¥' + formatMoney(record.balanceAfter), 'k7'))
+      }
+      var pendingHint = record === undefined
+        ? '还没有余额采样。'
+        : record.reconcileStatus === 'missing-before'
+          ? '这一轮开始前没采到余额（插件刚装或页面刚打开）；从下一轮起会自动对账。'
+          : record.reconcileStatus === 'pending' || record.reconcileStatus === 'pending-zero'
+            ? '余额还没落账；保持页面打开，30 秒采样会自动补上。'
+            : record.reconcileStatus === 'stale-before'
+              ? '轮前余额采样太旧，这一轮没法可靠对账。'
+              : record.reconcileStatus === 'currency-mismatch'
+                ? '前后两次余额的币种不一致，无法相减。'
+                : null
+      if (pendingHint !== null) body.push(note(React, pendingHint, 'n4'))
+      else {
+        body.push(note(React,
+          '实扣 = 本轮前后余额差；同账号其他请求也会动余额，有偏差时以账单为准。', 'n5'))
+      }
+      body.push(React.createElement('div', { className: 'tc-recon-actions', key: 'actions' },
+        React.createElement('button', {
+          type: 'button',
+          className: 'tc-refresh',
+          onClick: function () { if (typeof refreshBalance === 'function') refreshBalance() },
+        }, '刷新余额'),
+      ))
+
       return React.createElement('div', { className: 'tc-wrap' },
         line,
         React.createElement('div', { className: 'tc-detail' }, body),
@@ -490,9 +832,10 @@
    * 造「账户余额」胶囊（挂在会话头部）。
    * @param React - require('react') 拿到的 React。
    * @param readBalance - 无参函数，返回 Promise<归一化余额 | null>。
-   * @returns React 组件：`余额 ¥88.10 ▾`，点开是充值/赠送与更新时间。
+   * @param store - 对账台账（用于显示本会话累计预估/实扣）。
+   * @returns React 组件：`余额 ¥88.10 ▾`，点开是充值/赠送/更新时间 + 本会话对账累计。
    */
-  function makeBalanceComponent(React, readBalance) {
+  function makeBalanceComponent(React, readBalance, store) {
     return function BalancePill() {
       var dataState = React.useState(null)
       var data = dataState[0]
@@ -500,11 +843,19 @@
       var openState = React.useState(false)
       var open = openState[0]
       var setOpen = openState[1]
+      var revisionState = React.useState(0)
+      var setRevision = revisionState[1]
+      React.useEffect(function () {
+        if (store === undefined) return undefined
+        return store.subscribe(function () { setRevision(function (value) { return value + 1 }) })
+      }, [store])
       React.useEffect(function () {
         var alive = true
         var load = function () {
           Promise.resolve(readBalance()).then(function (next) {
-            if (alive) setData(next)
+            if (!alive) return
+            setData(next)
+            if (next !== null && store !== undefined) store.recordBalance(next)
           }, function () {
             if (alive) setData(null)
           })
@@ -544,6 +895,19 @@
       var body = [detailRow(React, '充值余额', data.text, 'b1')]
       if (data.bonusText !== null) body.push(detailRow(React, '赠送余额', data.bonusText, 'b2'))
       body.push(detailRow(React, '更新时间', new Date(data.updatedAt).toLocaleTimeString(), 'b3'))
+      // 本会话累计对账：只统计已经拿到实扣的轮次，避免没对上时虚报 0。
+      var totals = store === undefined ? null : store.getTotals()
+      if (totals !== null && totals.reconciled > 0) {
+        body.push(React.createElement('div', { className: 'tc-recon-title', key: 'recon-title' },
+          '本会话对账 · ' + totals.reconciled + ' 轮'))
+        body.push(detailRow(React, '预估合计', '¥' + formatMoney(totals.estimated), 'b4'))
+        body.push(detailRow(React, '实扣合计', '¥' + formatMoney(totals.actual), 'b5'))
+        var gap = totals.estimated - totals.actual
+        body.push(detailRow(React, '差额', formatSignedMoney(gap) + (Math.abs(gap) < 0.01 ? '（一致）' : ''), 'b6'))
+        if (totals.pending > 0) body.push(note(React, totals.pending + ' 轮还在等余额落账。', 'b7'))
+      } else if (totals !== null && totals.pending > 0) {
+        body.push(note(React, '有 ' + totals.pending + ' 轮在等余额落账；保持页面打开会自动对上。', 'b7'))
+      }
       return React.createElement('div', { className: 'tc-bal-wrap' },
         pill,
         React.createElement('div', { className: 'tc-detail' }, body),
@@ -570,7 +934,28 @@
   function apply(ctx, React) {
     if (!ctx || !React) return
     injectStyles(ctx)
-    var Component = makeComponent(React)
+    var store = createReconcileStore()
+    var readBalance = makeBalanceReader(ctx)
+    /** 读一次余额并记进对账台账（采样器与「刷新余额」按钮共用）。 */
+    var sampleOnce = function () {
+      Promise.resolve(readBalance()).then(function (balance) {
+        if (balance !== null && balance !== undefined) store.recordBalance(balance)
+      }, function () {
+        // 未登录 / Remote 异常：安静跳过这次采样。
+      })
+    }
+    // 立即采一次，之后每 30 秒一次，窗口重新聚焦也补一次。
+    sampleOnce()
+    ctx.effect(function () {
+      var timer = setInterval(sampleOnce, BALANCE_SAMPLE_MS)
+      var onWake = function () { sampleOnce() }
+      if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('focus', onWake)
+      return function () {
+        clearInterval(timer)
+        if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('focus', onWake)
+      }
+    }, 'lingwu-conversation-cost.sampler')
+    var Component = makeComponent(React, store, sampleOnce)
     ctx.effect(function () {
       return ctx.slots.inject(SLOT_NAME, function () {
         return ctx.slots.register({
@@ -581,7 +966,7 @@
         }, Component)
       })
     }, 'lingwu-conversation-cost.tail')
-    var BalanceComponent = makeBalanceComponent(React, makeBalanceReader(ctx))
+    var BalanceComponent = makeBalanceComponent(React, readBalance, store)
     ctx.effect(function () {
       return ctx.slots.inject(BALANCE_SLOT, function () {
         return ctx.slots.register({
@@ -605,15 +990,25 @@
       formatTokens: formatTokens,
       formatExact: formatExact,
       readTurnUsage: readTurnUsage,
-      Component: makeComponent(React),
+      Component: makeComponent(React, createReconcileStore(), function () {}),
       formatMoney: formatMoney,
       balanceText: balanceText,
       normalizeBalance: normalizeBalance,
       accountClientMetadata: accountClientMetadata,
       makeBalanceReader: makeBalanceReader,
-      Balance: makeBalanceComponent(React, function () { return Promise.resolve(null) }),
+      Balance: makeBalanceComponent(React, function () { return Promise.resolve(null) }, createReconcileStore()),
       balanceSlot: BALANCE_SLOT,
       balanceCellId: BALANCE_CELL_ID,
+      createReconcileStore: createReconcileStore,
+      reconcileWindow: reconcileWindow,
+      reconcileText: reconcileText,
+      reconcileVerdict: reconcileVerdict,
+      formatSignedMoney: formatSignedMoney,
+      formatClock: formatClock,
+      turnKey: turnKey,
+      turnWindow: turnWindow,
+      makeComponent: makeComponent,
+      makeBalanceComponent: makeBalanceComponent,
     }
   }
 

@@ -1,0 +1,88 @@
+{
+  "project": "凌雾DSH对话花费",
+  "signature": "凌雾工坊 - MarcoHuiLam",
+  "repo": "github.com/MarcoHuiLam/lingwu-dsh-conversation-cost",
+  "theme": "dark",
+  "size": [1080, 1440],
+  "outDir": "cards",
+  "cards": [
+    {
+      "kind": "cover",
+      "eyebrow": "凌雾工坊 · 开源",
+      "title": "AI 聊一句，到底多少钱？",
+      "subtitle": "我给 DeepSeek Harness 装了张小票：每轮花费、token、缓存命中率，还有账户余额。"
+    },
+    {
+      "kind": "pain",
+      "eyebrow": "为什么做这个",
+      "title": "三个说不清的瞬间",
+      "bullets": [
+        "月底看账单，只看到一个总数，不知道哪一轮贵",
+        "同样是提问，有时几分钱，有时贵好几倍",
+        "缓存命中率看不见，想优化只能靠猜"
+      ]
+    },
+    {
+      "kind": "what",
+      "eyebrow": "它是什么",
+      "title": "每轮结算 + 账户余额",
+      "body": "一个 DSH Web 插件：挂在每轮回复下方，按 DSH 自己的 token 账本和官方价目算人民币；会话头部再放一个余额胶囊。",
+      "chips": ["人民币花费", "token 明细", "缓存命中率", "账户余额"]
+    },
+    {
+      "kind": "demo",
+      "eyebrow": "真实示例（示例数字）",
+      "title": "小票长这样",
+      "code": [
+        "≈ ¥0.0312 · 54.4k tok · 命中 98.0% ▾",
+        "",
+        "未命中输入   1,000 tok × ¥2/M   = ¥0.0020",
+        "缓存命中输入 50,000 tok × ¥0.04/M = ¥0.0020",
+        "输出        3,400 tok × ¥8/M   = ¥0.0272",
+        "合计        ¥0.0312"
+      ]
+    },
+    {
+      "kind": "demo",
+      "eyebrow": "余额也在头上了",
+      "title": "不用再翻设置",
+      "code": [
+        "余额 ¥128.50 ▾",
+        "",
+        "充值余额  ¥120.00",
+        "赠送余额  ¥8.50",
+        "更新时间  14:32"
+      ],
+      "body": "需要登录 DeepSeek 账号；只用 API Key 时这一格按设计隐藏。"
+    },
+    {
+      "kind": "how",
+      "eyebrow": "怎么用",
+      "title": "三步装上",
+      "steps": [
+        "把项目放进 DSH 的技能目录",
+        "运行 node scripts/install.mjs",
+        "刷新 DSH 页面，下一轮就能看到"
+      ],
+      "body": "Windows / macOS / Linux 同一份脚本；MIT 开源，价格表可自己改。"
+    },
+    {
+      "kind": "pain",
+      "eyebrow": "先说清楚边界",
+      "title": "它不是什么",
+      "bullets": [
+        "不是账单流水：金额是按官方价目算的应扣估算",
+        "法定节假日查不到，会按工作日记（可能偏高）",
+        "一轮里换过模型，只能按首个模型单价折算",
+        "没有账号登录时，余额那一格不会显示"
+      ]
+    },
+    {
+      "kind": "who",
+      "eyebrow": "我是谁",
+      "title": "凌雾工坊 - MarcoHuiLam",
+      "body": "一个人做产品、写脚本，把踩过的坑整理成能直接用的工具。协议 MIT，仓库在 GitHub，欢迎拿去改。",
+      "links": ["github.com/MarcoHuiLam/lingwu-dsh-conversation-cost"]
+    }
+  ]
+}

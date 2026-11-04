@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 1080px; height: 1440px; }
+body {
+  background: #0f1115; color: #f5f6f8;
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  display: flex; flex-direction: column; justify-content: space-between;
+  padding: 88px 84px 64px;
+}
+.top { display: flex; justify-content: space-between; align-items: center; }
+.eyebrow { font-size: 30px; letter-spacing: 2px; color: #5b8cff; font-weight: 700; }
+.page { font-size: 26px; color: #7d8798; font-variant-numeric: tabular-nums; }
+.main { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 28px; padding: 12px 0; }
+h1 { font-size: 72px; line-height: 1.18; margin: 0; letter-spacing: 1px; }
+h1.small { font-size: 64px; }
+.subtitle { font-size: 40px; line-height: 1.55; color: #b9c0cc; margin: 0; }
+p { font-size: 36px; line-height: 1.68; color: #b9c0cc; margin: 0 0 8px; }
+ul, ol { margin: 0; padding-left: 52px; display: flex; flex-direction: column; gap: 22px; }
+li { font-size: 38px; line-height: 1.55; color: #f5f6f8; }
+ol li::marker { color: #5b8cff; font-weight: 700; }
+ul li::marker { color: #5b8cff; }
+pre { margin: 0; padding: 40px 44px; background: #171a21; border: 1px solid #262b35; border-radius: 24px; overflow: hidden; }
+code { display: block; font-family: "Cascadia Code", Consolas, monospace; font-size: 34px; line-height: 1.62; color: #f5f6f8; white-space: pre-wrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 18px; }
+.chips span { font-size: 30px; color: #f5f6f8; padding: 12px 26px; border-radius: 999px; border: 1px solid #262b35; background: #171a21; }
+.links { display: flex; flex-direction: column; gap: 14px; }
+.links div { font-size: 30px; color: #5b8cff; }
+.foot { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #262b35; padding-top: 26px; gap: 24px; }
+.who { font-size: 28px; font-weight: 700; color: #f5f6f8; letter-spacing: 1px; white-space: nowrap; }
+.repo { font-size: 24px; color: #7d8798; text-align: right; }
+</style></head>
+<body>
+  <div class="top">
+    <div class="eyebrow">怎么用</div>
+    <div class="page">6 / 8</div>
+  </div>
+  <div class="main">
+    <h1 class="small">三步装上</h1>
+    <p>Windows / macOS / Linux 同一份脚本；MIT 开源，价格表可自己改。</p><ol><li>把项目放进 DSH 的技能目录</li><li>运行 node scripts/install.mjs</li><li>刷新 DSH 页面，下一轮就能看到</li></ol>
+  </div>
+  <div class="foot">
+    <div class="who">凌雾工坊 - MarcoHuiLam</div>
+    <div class="repo">github.com/MarcoHuiLam/lingwu-dsh-conversation-cost</div>
+  </div>
+</body></html>

@@ -1,0 +1,83 @@
+{
+  "project": "凌雾DSH对话花费",
+  "signature": "凌雾工坊 - MarcoHuiLam",
+  "repo": "github.com/MarcoHuiLam/lingwu-dsh-conversation-cost",
+  "size": [
+    1080,
+    1440
+  ],
+  "files": [
+    {
+      "index": 1,
+      "kind": "cover",
+      "html": "card-01.html",
+      "png": "card-01.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 84230
+    },
+    {
+      "index": 2,
+      "kind": "pain",
+      "html": "card-02.html",
+      "png": "card-02.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 80579
+    },
+    {
+      "index": 3,
+      "kind": "what",
+      "html": "card-03.html",
+      "png": "card-03.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 95615
+    },
+    {
+      "index": 4,
+      "kind": "demo",
+      "html": "card-04.html",
+      "png": "card-04.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 85942
+    },
+    {
+      "index": 5,
+      "kind": "demo",
+      "html": "card-05.html",
+      "png": "card-05.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 84723
+    },
+    {
+      "index": 6,
+      "kind": "how",
+      "html": "card-06.html",
+      "png": "card-06.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 81431
+    },
+    {
+      "index": 7,
+      "kind": "pain",
+      "html": "card-07.html",
+      "png": "card-07.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 92158
+    },
+    {
+      "index": 8,
+      "kind": "who",
+      "html": "card-08.html",
+      "png": "card-08.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 83426
+    }
+  ]
+}
