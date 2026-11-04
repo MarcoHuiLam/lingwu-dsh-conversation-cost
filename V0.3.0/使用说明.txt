@@ -1,0 +1,45 @@
+凌雾DSH对话花费（lingwu-dsh-conversation-cost）V0.3.0
+作者：凌雾工坊 - MarcoHuiLam ｜ 协议：MIT
+
+一、这是什么
+给 DeepSeek Harness（DSH）Web 界面的插件。每轮对话结束后，回复下方显示：
+    ≈ ¥0.0312 · 54.4k tok · 命中 98.0% ▾ · 实扣 ¥0.03
+点开是未命中输入 / 缓存命中输入 / 输出三段单价与小计，
+以及「余额对账」：本轮实扣、预估差额、余额窗口、余额变化。
+会话头部右侧还有「余额 ¥x.xx ▾」（需登录 DeepSeek 账号），
+点开能看到充值/赠送、更新时间，以及本会话预估合计 / 实扣合计 / 差额。
+
+二、怎么装
+1. 确认 Node 版本 >= 18，且 DSH 的 web profile 能正常启动（dsh web）。
+2. 在本目录执行：
+       node scripts/install.mjs --check
+       node scripts/install.mjs
+3. 刷新浏览器里的 DSH 页面。
+   页面没变化时，重启一次 dsh web。
+
+三、怎么改价
+打开 plugin/client.js，找到顶部 DEEPSEEK_PRICES，单位是「元/百万 tokens」：
+   peak 高峰价、off 空闲价；miss 未命中输入、hit 缓存命中输入、
+   write 缓存写入输入、out 输出。
+改完刷新页面即生效。官方价目见 api-docs.deepseek.com 的「模型 & 价格」。
+
+四、余额对账（v0.3.0 新增）
+每 30 秒采一次余额；每轮用「开始前最近一次」与「结束后至少 3 秒的第一次」
+两个快照相减，得到本轮实扣，和预估并排显示（差额 ±0.01 内标「一致」）。
+余额没动静时会再等最多 5 分钟给账单落账。
+台账存在浏览器 localStorage，仅本机、仅自己可见。
+
+五、口径提醒
+预估金额是「按官方价目算的应扣估算」（前面有 ≈），不是账单流水；
+法定节假日查不到，会按工作日记（可能偏高）；一轮里换过模型时按首个模型单价折算。
+「实扣」是这段时间的余额变化：同账号其他请求也会动余额，有偏差时以账单为准。
+缺轮前余额 / 等待落账 / 轮前快照太旧 / 币种不一致，界面会明说原因，不给假数字。
+
+六、安全
+不收集、不上传任何数据；不含也不读取 API Key。
+余额查询走 DSH 本机已有的账号会话（ctx.remote.account.getBalance）。
+
+七、卸载/禁用
+在 <DSH_HOME>/cordis.patch.yml 里给
+    - id: lingwu-dsh-conversation-cost
+加一行 disabled: true，刷新页面即可。
