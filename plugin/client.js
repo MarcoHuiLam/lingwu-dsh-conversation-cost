@@ -624,7 +624,7 @@
       var bound = function (ctx) { apply(ctx, React) }
       bound.debug = debugFace(React)
       return {
-        name: 'lingwu-conversation-cost',
+        name: 'lingwu-dsh-conversation-cost',
         // slots：槽位注册；remote / remote.account：余额走账号 Remote（Cordis 注入守卫要求显式声明）。
         inject: ['slots', 'remote', 'remote.account'],
         apply: bound,

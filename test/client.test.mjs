@@ -158,7 +158,7 @@ check('插件声明的槽位与账户依赖', () => {
   // remote.account 必须显式声明：Cordis 注入守卫会在没声明时抛
   // "cannot get property \"remote.account\" without inject"。
   assert.deepEqual(plugin.inject, ['slots', 'remote', 'remote.account'])
-  assert.equal(plugin.name, 'lingwu-conversation-cost')
+  assert.equal(plugin.name, 'lingwu-dsh-conversation-cost')
 })
 
 check('deepseek-flash 价格表（官方人民币价）', () => {
