@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+pnpm-lock.yaml
+
+# 本地验证/临时目录（不公开）
+verify/
+_internal/
+_内部文档/
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

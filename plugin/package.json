@@ -1,0 +1,41 @@
+{
+  "name": "lingwu-dsh-conversation-cost",
+  "version": "0.2.1",
+  "description": "DSH Web GUI 插件：每轮对话后显示本轮人民币花费、token 用量与缓存命中率，并在会话头部显示账户余额",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cost",
+    "token",
+    "cache-hit-rate"
+  ],
+  "author": "凌雾工坊 - MarcoHuiLam",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MarcoHuiLam/lingwu-dsh-conversation-cost.git"
+  },
+  "homepage": "https://github.com/MarcoHuiLam/lingwu-dsh-conversation-cost#readme",
+  "bugs": {
+    "url": "https://github.com/MarcoHuiLam/lingwu-dsh-conversation-cost/issues"
+  }
+}
